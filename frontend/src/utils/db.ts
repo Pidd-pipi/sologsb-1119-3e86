@@ -7,7 +7,7 @@ import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -52,6 +52,56 @@ class FossilPrepDB extends Dexie {
           .modify((row: any) => {
             if (!row.issues) row.issues = [];
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
+          });
+      });
+    // v3：材料流转补全——领用关联标本/工序、支持退回与作废
+    this.version(3)
+      .stores({
+        specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+        procedures: 'id, specimenId, seq, stepType, state, startedAt',
+        supplies: 'id, kind, lotNo, name, openedAt',
+        photos: 'id, specimenId, procedureId, stage, capturedAt',
+      })
+      .upgrade(async (tx) => {
+        const specimenNoToId = new Map<string, string>();
+        await tx
+          .table('specimens')
+          .each((row: any) => specimenNoToId.set(row.specimenNo, row.id));
+        await tx
+          .table('supplies')
+          .toCollection()
+          .modify((row: any) => {
+            if (!Array.isArray(row.issues)) row.issues = [];
+            row.issues = row.issues.map((iss: any) => {
+              const alreadyReturned = typeof iss.returnedQty === 'number' ? iss.returnedQty : 0;
+              const specimenId = specimenNoToId.get(iss.specimenNo) ?? '';
+              const next: any = {
+                id: iss.id,
+                qty: iss.qty,
+                unit: row.unit ?? '',
+                operator: iss.operator ?? '',
+                specimenId,
+                specimenNo: iss.specimenNo ?? '未关联标本',
+                procedureId: iss.procedureId ?? undefined,
+                procedureSeq: iss.procedureSeq ?? undefined,
+                procedureName: iss.procedureName ?? undefined,
+                issuedAt: iss.issuedAt,
+                status: alreadyReturned >= iss.qty ? 'returned' : 'issued',
+                returns: [],
+              };
+              if (alreadyReturned > 0) {
+                // 历史数据若登记过退回量，折叠成一条退回记录
+                next.returns.push({
+                  id: newId('ret'),
+                  qty: alreadyReturned,
+                  operator: iss.operator ?? '',
+                  reason: '历史数据补录',
+                  returnedAt: iss.issuedAt,
+                });
+                row.qty += alreadyReturned;
+              }
+              return next;
+            });
           });
       });
   }
@@ -158,6 +208,25 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 6 * day,
       state: 'pending',
     },
+    {
+      id: newId('prc'),
+      specimenId: specimenId2,
+      stepType: '清修',
+      nodeName: '吻部围岩试清',
+      seq: 1,
+      tools: ['剔针'],
+      abrasive: '800 目',
+      adhesive: '',
+      adhesiveConc: 0,
+      durationMin: 40,
+      tempC: 22,
+      rh: 50,
+      photoBeforeIds: [],
+      photoAfterIds: [],
+      operator: '周慕白',
+      startedAt: now - 3 * day,
+      state: 'rolledback',
+    },
   ];
 
   const photos: PrepPhoto[] = [
@@ -199,9 +268,16 @@ export async function ensureSeedData(): Promise<void> {
         {
           id: newId('iss'),
           qty: 1,
+          unit: '瓶',
           operator: '林砚秋',
+          specimenId,
           specimenNo: 'FP-2024-0031',
+          procedureId: procedures[1].id,
+          procedureSeq: 2,
+          procedureName: '围岩裂隙渗透加固',
           issuedAt: now - 6 * day,
+          status: 'issued',
+          returns: [],
         },
       ],
     },
@@ -211,12 +287,29 @@ export async function ensureSeedData(): Promise<void> {
       kind: '磨料',
       spec: '800 目 1 kg',
       lotNo: 'SIC-800-2401',
-      qty: 1,
+      qty: 2,
       unit: '袋',
       openedAt: now - 60 * day,
       shelfLifeMonths: 60,
       lowThreshold: 2,
-      issues: [],
+      issues: [
+        {
+          id: newId('iss'),
+          qty: 1,
+          unit: '袋',
+          operator: '周慕白',
+          specimenId: specimenId2,
+          specimenNo: 'FP-2024-0058',
+          procedureId: procedures[2].id,
+          procedureSeq: 1,
+          procedureName: '吻部围岩试清',
+          issuedAt: now - 3 * day,
+          status: 'voided',
+          returns: [],
+          voidedAt: now - 2 * day,
+          voidReason: '工序已回退',
+        },
+      ],
     },
     {
       id: newId('sup'),
@@ -229,7 +322,30 @@ export async function ensureSeedData(): Promise<void> {
       openedAt: now - 90 * day,
       shelfLifeMonths: 120,
       lowThreshold: 5,
-      issues: [],
+      issues: [
+        {
+          id: newId('iss'),
+          qty: 2,
+          unit: '支',
+          operator: '林砚秋',
+          specimenId,
+          specimenNo: 'FP-2024-0031',
+          procedureId: procedures[0].id,
+          procedureSeq: 1,
+          procedureName: '左侧肩胛区粗清',
+          issuedAt: now - 10 * day,
+          status: 'returned',
+          returns: [
+            {
+              id: newId('ret'),
+              qty: 1,
+              operator: '林砚秋',
+              reason: '胶种未用完，退回原批次',
+              returnedAt: now - 9 * day,
+            },
+          ],
+        },
+      ],
     },
     {
       id: newId('sup'),

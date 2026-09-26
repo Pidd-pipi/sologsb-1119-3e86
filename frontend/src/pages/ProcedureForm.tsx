@@ -14,8 +14,9 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import Checkbox from '@mui/material/Checkbox';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
+import { useSupplyStore } from '../stores/supplyStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
-import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
+import { ProcedureTimeline, type ProcedureMaterialFlow } from '../components/common/ProcedureTimeline';
 import { MeasureField } from '../components/common/MeasureField';
 import { STEP_FIELD_MAP, STEP_TYPES, type StepType } from '../types/procedure';
 import { db } from '../utils/db';
@@ -30,6 +31,8 @@ export default function ProcedureForm() {
   const addProcedure = useProcedureStore((s) => s.add);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
+  const removeProcedure = useProcedureStore((s) => s.remove);
+  const lots = useSupplyStore((s) => s.items);
 
   const [specimenId, setSpecimenId] = useState(params.get('specimenId') ?? specimens[0]?.id ?? '');
   const [stepType, setStepType] = useState<StepType>('清修');
@@ -52,6 +55,19 @@ export default function ProcedureForm() {
   const nextSeq = progress.list.length === 0 ? 1 : Math.max(...progress.list.map((it) => it.seq)) + 1;
 
   const specimen = useMemo(() => specimens.find((it) => it.id === specimenId), [specimens, specimenId]);
+
+  const materialFlows: ProcedureMaterialFlow[] = useMemo(() => {
+    if (!specimenId) return [];
+    const flows: ProcedureMaterialFlow[] = [];
+    for (const lot of lots) {
+      for (const issue of lot.issues) {
+        if (issue.specimenId === specimenId) {
+          flows.push({ lotId: lot.id, lotName: lot.name, lotNo: lot.lotNo, unit: issue.unit || lot.unit, issue });
+        }
+      }
+    }
+    return flows;
+  }, [lots, specimenId]);
 
   const submit = async () => {
     if (!specimenId) {
@@ -333,13 +349,31 @@ export default function ProcedureForm() {
           ) : null}
           <ProcedureTimeline
             items={progress.list}
+            materialFlows={materialFlows}
             onFinish={async (pid) => {
               await finish(pid);
               setToast('节点已完成');
             }}
             onRollback={async (pid) => {
-              await rollback(pid);
-              setToast('节点已回退');
+              const r = await rollback(pid);
+              setToast(
+                r.voidedIssueCount > 0
+                  ? `节点已回退，${r.voidedIssueCount} 笔未退回领用已作废、恢复库存 ${r.restoredQty} 件`
+                  : '节点已回退（无待恢复的领用）',
+              );
+            }}
+            onRemove={async (pid) => {
+              const node = progress.list.find((n) => n.id === pid);
+              const ok = window.confirm(
+                `确定移除节点 #${node?.seq ?? ''} ${node?.nodeName ?? ''}？\n该工序未退回的材料领用将自动作废并恢复库存，且不可恢复。`,
+              );
+              if (!ok) return;
+              const r = await removeProcedure(pid);
+              setToast(
+                r.voidedIssueCount > 0
+                  ? `节点已移除，${r.voidedIssueCount} 笔领用已作废、恢复库存 ${r.restoredQty} 件`
+                  : '节点已移除',
+              );
             }}
           />
         </Paper>

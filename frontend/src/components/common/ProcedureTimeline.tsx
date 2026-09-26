@@ -12,14 +12,28 @@ import Tooltip from '@mui/material/Tooltip';
 import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import UndoIcon from '@mui/icons-material/Undo';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { PrepProcedure } from '../../types/procedure';
+import type { SupplyIssue } from '../../types/supply';
+
+/** 工序下挂的材料流水（带批次信息，用于在时间线里展示去向） */
+export interface ProcedureMaterialFlow {
+  lotId: string;
+  lotName: string;
+  lotNo: string;
+  unit: string;
+  issue: SupplyIssue;
+}
 
 export interface ProcedureTimelineProps {
   items: PrepProcedure[];
   onFinish?: (id: string) => void;
   onRollback?: (id: string) => void;
+  onRemove?: (id: string) => void;
   onOpenPhoto?: (procedureId: string) => void;
+  /** 各工序关联的材料领用流水 */
+  materialFlows?: ProcedureMaterialFlow[];
 }
 
 function fmtTime(ts?: number): string {
@@ -33,7 +47,7 @@ function fmtTime(ts?: number): string {
  * 纵向工序节点流：步骤图标、状态、耗时、环境参数折叠区。
  * 被标本详情页、工序录入页消费。
  */
-export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: ProcedureTimelineProps) {
+export function ProcedureTimeline({ items, onFinish, onRollback, onRemove, onOpenPhoto, materialFlows }: ProcedureTimelineProps) {
   const [expanded, setExpanded] = useState<string | null>(items[0]?.id ?? null);
 
   if (items.length === 0) {
@@ -51,6 +65,7 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
       {items.map((node, index) => {
         const isDone = node.state === 'done';
         const open = expanded === node.id;
+        const flows = (materialFlows ?? []).filter((f) => f.issue.procedureId === node.id);
         return (
           <Box key={node.id} sx={{ display: 'flex', gap: 1.5 }}>
             <Stack alignItems="center" sx={{ pt: 0.5 }}>
@@ -88,6 +103,21 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     回退节点
                   </Button>
                 ) : null}
+                {node.state === 'rolledback' && onRemove ? (
+                  <Tooltip title="移除后该节点未退回的材料领用将自动作废并恢复库存">
+                    <Button
+                      size="small"
+                      color="error"
+                      startIcon={<DeleteOutlineIcon />}
+                      onClick={() => onRemove(node.id)}
+                    >
+                      移除节点
+                    </Button>
+                  </Tooltip>
+                ) : null}
+                {node.state === 'rolledback' ? (
+                  <Chip size="small" variant="outlined" color="warning" label="未退回领用将自动作废" />
+                ) : null}
                 <Tooltip title={open ? '收起环境参数' : '展开环境参数'}>
                   <IconButton size="small" onClick={() => setExpanded(open ? null : node.id)}>
                     <ExpandMoreIcon
@@ -114,6 +144,42 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                   <Typography variant="body2">
                     影像：前 {node.photoBeforeIds.length} 张 / 后 {node.photoAfterIds.length} 张
                   </Typography>
+                  {flows.length > 0 ? (
+                    <Box sx={{ width: '100%' }}>
+                      <Typography variant="body2" fontWeight={700} sx={{ mb: 0.5 }}>
+                        材料去向：
+                      </Typography>
+                      <Stack spacing={0.5}>
+                        {flows.map(({ lotName, lotNo, unit, issue }) => {
+                          const returned = issue.returns.reduce((s, r) => s + r.qty, 0);
+                          const statusColor =
+                            issue.status === 'issued' ? 'primary' : issue.status === 'returned' ? 'success' : 'error';
+                          const statusText =
+                            issue.status === 'issued'
+                              ? '领用中'
+                              : issue.status === 'returned'
+                                ? '已退回'
+                                : `已作废（${issue.voidReason ?? '库存已恢复'}）`;
+                          return (
+                            <Box key={issue.id} sx={{ display: 'flex', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <Chip size="small" color={statusColor as 'primary' | 'success' | 'error'} label={statusText} />
+                              <Typography variant="body2">
+                                {lotName}（批号 {lotNo}）：领 {issue.qty} {unit}
+                                {returned > 0 ? ` · 已退 ${returned} ${unit}` : ''}
+                                {issue.status === 'voided' && returned < issue.qty
+                                  ? ` · 恢复库存 ${issue.qty - returned} ${unit}`
+                                  : ''}
+                              </Typography>
+                            </Box>
+                          );
+                        })}
+                      </Stack>
+                    </Box>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      材料去向：本节点暂无关联领用
+                    </Typography>
+                  )}
                   {onOpenPhoto ? (
                     <Button size="small" onClick={() => onOpenPhoto(node.id)}>
                       查看对照
