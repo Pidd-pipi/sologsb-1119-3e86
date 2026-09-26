@@ -7,7 +7,7 @@ import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -52,6 +52,29 @@ class FossilPrepDB extends Dexie {
           .modify((row: any) => {
             if (!row.issues) row.issues = [];
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
+          });
+      });
+    // v3：领用记录支持退回 / 作废分段记账，并关联标本与工序
+    this.version(3)
+      .stores({
+        specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+        procedures: 'id, specimenId, seq, stepType, state, startedAt',
+        supplies: 'id, kind, lotNo, name, openedAt',
+        photos: 'id, specimenId, procedureId, stage, capturedAt',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('supplies')
+          .toCollection()
+          .modify((row: any) => {
+            if (!Array.isArray(row.issues)) {
+              row.issues = [];
+              return;
+            }
+            row.issues.forEach((iss: any) => {
+              if (iss.returnedQty === undefined) iss.returnedQty = 0;
+              if (iss.voidedQty === undefined) iss.voidedQty = 0;
+            });
           });
       });
   }
@@ -201,7 +224,12 @@ export async function ensureSeedData(): Promise<void> {
           qty: 1,
           operator: '林砚秋',
           specimenNo: 'FP-2024-0031',
+          specimenId,
+          procedureId: procedures[1].id,
+          procedureLabel: `#${procedures[1].seq} ${procedures[1].stepType} · ${procedures[1].nodeName}`,
           issuedAt: now - 6 * day,
+          returnedQty: 0,
+          voidedQty: 0,
         },
       ],
     },

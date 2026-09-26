@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link as RouterLink, useNavigate, useParams } from 'react-router-dom';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -15,9 +15,10 @@ import AddIcon from '@mui/icons-material/Add';
 import CompareIcon from '@mui/icons-material/Compare';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
+import { useSupplyStore } from '../stores/supplyStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { SpecimenCard } from '../components/common/SpecimenCard';
-import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
+import { ProcedureTimeline, type ProcedureIssueEntry } from '../components/common/ProcedureTimeline';
 import { db } from '../utils/db';
 import { PHOTO_STAGE_LABEL, type PrepPhoto } from '../types/photo';
 import { SPECIMEN_STATUSES, type SpecimenStatus } from '../types/specimen';
@@ -30,9 +31,23 @@ export default function SpecimenDetail() {
   const setStatus = useSpecimenStore((s) => s.setStatus);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
+  const removeProcedure = useProcedureStore((s) => s.remove);
+  const lots = useSupplyStore((s) => s.items);
   const progress = usePrepProgress(id);
   const [photos, setPhotos] = useState<PrepPhoto[]>([]);
   const [toast, setToast] = useState('');
+
+  /** 按工序 id 归集材料领用，时间线展开区展示去向 */
+  const issuesByProcedure = useMemo(() => {
+    const map: Record<string, ProcedureIssueEntry[]> = {};
+    lots.forEach((lot) => {
+      lot.issues.forEach((issue) => {
+        if (!issue.procedureId) return;
+        (map[issue.procedureId] ??= []).push({ lot, issue });
+      });
+    });
+    return map;
+  }, [lots]);
 
   const loadPhotos = useCallback(async () => {
     if (!id) return;
@@ -134,13 +149,21 @@ export default function SpecimenDetail() {
             </Typography>
             <ProcedureTimeline
               items={progress.list}
+              issuesByProcedure={issuesByProcedure}
               onFinish={async (pid) => {
                 await finish(pid);
                 setToast('节点已完成');
               }}
               onRollback={async (pid) => {
-                await rollback(pid);
-                setToast('节点已回退');
+                const voided = await rollback(pid);
+                setToast(voided > 0 ? `节点已回退，${voided} 笔领用已作废回库` : '节点已回退');
+              }}
+              onRemove={async (pid) => {
+                const node = progress.list.find((it) => it.id === pid);
+                const label = node ? `#${node.seq} ${node.stepType} · ${node.nodeName}` : '该节点';
+                if (!window.confirm(`确认移除工序节点「${label}」？\n其名下未退回的材料领用将自动作废并回库。`)) return;
+                const voided = await removeProcedure(pid);
+                setToast(voided > 0 ? `节点已移除，${voided} 笔领用已作废回库` : '节点已移除');
               }}
             />
           </Paper>

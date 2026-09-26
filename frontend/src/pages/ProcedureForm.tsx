@@ -14,8 +14,9 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import Checkbox from '@mui/material/Checkbox';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
+import { useSupplyStore } from '../stores/supplyStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
-import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
+import { ProcedureTimeline, type ProcedureIssueEntry } from '../components/common/ProcedureTimeline';
 import { MeasureField } from '../components/common/MeasureField';
 import { STEP_FIELD_MAP, STEP_TYPES, type StepType } from '../types/procedure';
 import { db } from '../utils/db';
@@ -48,10 +49,23 @@ export default function ProcedureForm() {
   const [toast, setToast] = useState('');
 
   const progress = usePrepProgress(specimenId || undefined);
+  const lots = useSupplyStore((s) => s.items);
   const fieldMap = STEP_FIELD_MAP[stepType];
   const nextSeq = progress.list.length === 0 ? 1 : Math.max(...progress.list.map((it) => it.seq)) + 1;
 
   const specimen = useMemo(() => specimens.find((it) => it.id === specimenId), [specimens, specimenId]);
+
+  /** 按工序 id 归集材料领用，时间线展开区展示去向 */
+  const issuesByProcedure = useMemo(() => {
+    const map: Record<string, ProcedureIssueEntry[]> = {};
+    lots.forEach((lot) => {
+      lot.issues.forEach((issue) => {
+        if (!issue.procedureId) return;
+        (map[issue.procedureId] ??= []).push({ lot, issue });
+      });
+    });
+    return map;
+  }, [lots]);
 
   const submit = async () => {
     if (!specimenId) {
@@ -333,13 +347,14 @@ export default function ProcedureForm() {
           ) : null}
           <ProcedureTimeline
             items={progress.list}
+            issuesByProcedure={issuesByProcedure}
             onFinish={async (pid) => {
               await finish(pid);
               setToast('节点已完成');
             }}
             onRollback={async (pid) => {
-              await rollback(pid);
-              setToast('节点已回退');
+              const voided = await rollback(pid);
+              setToast(voided > 0 ? `节点已回退，${voided} 笔领用已作废回库` : '节点已回退');
             }}
           />
         </Paper>
